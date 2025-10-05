@@ -1,0 +1,28 @@
+Install make cmd
+
+Step 1: Install Chocolatey : 
+    - Open PowerShell as Administrator.
+    - {Set-ExecutionPolicy Bypass -Scope Process -Force; `
+[System.Net.ServicePointManager]::SecurityProtocol = `
+[System.Net.ServicePointManager]::SecurityProtocol -bor 3072; `
+iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+}
+
+Step 2: Install make : 
+    - choco install make
+
+Step 3: Restart VS code
+
+Step 4: make --version
+
+Done!!!
+
+
+________________________________________________________________________________________
+
+Make test :
+
+When you run make test, Go executes go test ./..., which tells it to scan the current directory and all subdirectories for files ending with _test.go. Inside those files, it looks for all functions starting with Test. For each test function, Go creates a testing.T instance (representing the test case) and passes its pointer (*testing.T) into the function. Your test uses this pointer to report failures or log information via methods like t.Error() or t.Fatal(). After the function finishes, Go reads the state of that testing.T instance to determine whether the test passed or failed and prints the results.
+
+
+________________________________________________________________________________________
