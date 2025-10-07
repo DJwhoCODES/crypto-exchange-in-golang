@@ -49,6 +49,15 @@ func NewOrder(bid bool, size float64) *Order {
 	}
 }
 
+func NewOrderbook() *Orderbook {
+	return &Orderbook{
+		Asks:       []*Limit{},
+		Bids:       []*Limit{},
+		AsksLimits: make(map[float64]*Limit),
+		BidsLimits: make(map[float64]*Limit),
+	}
+}
+
 func (l *Limit) AddOrderToLimit(o *Order) {
 	o.Limit = l
 	l.Orders = append(l.Orders, o)
@@ -70,8 +79,74 @@ func (l *Limit) DeleteOrderFromLimit(o *Order) {
 	})
 }
 
-func (o *Order) String() string {
-	return fmt.Sprintf("[size: %.2f]", o.Size)
+func (l *Limit) fillOrder(o1, o2 *Order) Match {
+	var (
+		bid        *Order
+		ask        *Order
+		sizeFilled float64
+	)
+
+	if o1.Bid {
+		bid = o1
+		ask = o2
+	} else {
+		bid = o2
+		ask = o1
+	}
+
+	if o1.Size >= o2.Size {
+		o1.Size -= o2.Size
+		sizeFilled = o2.Size
+		o2.Size = 0.0
+	} else {
+		o2.Size -= o1.Size
+		sizeFilled = o1.Size
+		o1.Size = 0.0
+	}
+
+	return Match{
+		Ask:        ask,
+		Bid:        bid,
+		SizeFilled: sizeFilled,
+		Price:      l.Price,
+	}
+
+}
+
+func (l *Limit) Fill(o *Order) []Match {
+	var (
+		matches        []Match
+		ordersToDelete []*Order
+	)
+
+	for _, order := range l.Orders {
+		match := l.fillOrder(o, order)
+		matches = append(matches, match)
+
+		l.TotalVolume -= match.SizeFilled
+
+		if order.IsFilled() {
+			ordersToDelete = append(ordersToDelete, order)
+		}
+
+		if o.IsFilled() {
+			break
+		}
+	}
+
+	for _, order := range ordersToDelete {
+		l.DeleteOrderFromLimit(order)
+	}
+
+	return matches
+}
+
+// func (o *Order) String() string {
+// 	return fmt.Sprintf("[size: %.2f]", o.Size)
+// }
+
+func (o *Order) IsFilled() bool {
+	return o.Size == 0.0
 }
 
 // func (l *Limit) String() string {
@@ -85,26 +160,45 @@ func (o *Order) String() string {
 // 	return fmt.Sprintf("[price: %.2f | orders: [%s] | totalVolume: %.2f]", l.Price, orderStr, l.TotalVolume)
 // }
 
-func NewOrderbook() *Orderbook {
-	return &Orderbook{
-		Asks:       []*Limit{},
-		Bids:       []*Limit{},
-		AsksLimits: make(map[float64]*Limit),
-		BidsLimits: make(map[float64]*Limit),
+func (ob *Orderbook) BidTotalVolume() float64 {
+	totalVolume := 0.0
+
+	for i := 0; i < len(ob.Bids); i++ {
+		totalVolume += ob.Bids[i].TotalVolume
+	}
+
+	return totalVolume
+}
+
+func (ob *Orderbook) AskTotalVolume() float64 {
+	totalVolume := 0.0
+
+	for i := 0; i < len(ob.Asks); i++ {
+		totalVolume += ob.Asks[i].TotalVolume
+	}
+
+	return totalVolume
+}
+
+func (ob *Orderbook) clearLimit(bid bool, l *Limit) {
+	if bid {
+		delete(ob.BidsLimits, l.Price)
+		for i := 0; i < len(ob.Bids); i++ {
+			if ob.Bids[i] == l {
+				ob.Bids = append(ob.Bids[:i], ob.Bids[i+1:]...)
+			}
+		}
+	} else {
+		delete(ob.AsksLimits, l.Price)
+		for i := 0; i < len(ob.Asks); i++ {
+			if ob.Asks[i] == l {
+				ob.Asks = append(ob.Asks[:i], ob.Asks[i+1:]...)
+			}
+		}
 	}
 }
 
-func (ob *Orderbook) PlaceOrder(price float64, o *Order) []Match {
-	// 1. try to match the orders using matching logic
-	// 2. add the rest of the order to the book
-	if o.Size > 0.0 {
-		ob.add(price, o)
-	}
-
-	return []Match{}
-}
-
-func (ob *Orderbook) add(price float64, o *Order) {
+func (ob *Orderbook) PlaceLimitOrder(price float64, o *Order) {
 	var limit *Limit
 
 	if o.Bid {
@@ -139,4 +233,50 @@ func (ob *Orderbook) add(price float64, o *Order) {
 	sort.Slice(limit.Orders, func(i, j int) bool {
 		return limit.Orders[i].Timestamp < limit.Orders[j].Timestamp
 	})
+}
+
+func (ob *Orderbook) PlaceMarketOrder(o *Order) []Match {
+	matches := []Match{}
+
+	if o.Bid {
+		if o.Size > ob.AskTotalVolume() {
+			panic(fmt.Errorf("not enough volume [size: %.2f] for market order [size: %.2f]", ob.AskTotalVolume(), o.Size))
+		}
+		var toClear []*Limit
+		for _, limit := range ob.Asks {
+			limitMatches := limit.Fill(o)
+			matches = append(matches, limitMatches...)
+
+			if len(limit.Orders) == 0 {
+				toClear = append(toClear, limit)
+			}
+			if o.IsFilled() {
+				break
+			}
+		}
+		for _, l := range toClear {
+			ob.clearLimit(false, l)
+		}
+	} else {
+		if o.Size > ob.BidTotalVolume() {
+			panic(fmt.Errorf("not enough volume [size: %.2f] for market order [size: %.2f]", ob.BidTotalVolume(), o.Size))
+		}
+		var toClear []*Limit
+		for _, limit := range ob.Bids {
+			limitMatches := limit.Fill(o)
+			matches = append(matches, limitMatches...)
+
+			if len(limit.Orders) == 0 {
+				toClear = append(toClear, limit)
+			}
+			if o.IsFilled() {
+				break
+			}
+		}
+		for _, l := range toClear {
+			ob.clearLimit(true, l)
+		}
+	}
+
+	return matches
 }
